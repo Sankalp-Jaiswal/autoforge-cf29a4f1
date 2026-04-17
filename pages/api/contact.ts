@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import nodemailer from 'nodemailer';
 import axios from 'axios';
 import xss from 'xss';
-import { rateLimit } from 'rate-limit-next';
+import { RateLimiter } from 'limiter';
 import { logger } from '../../utils/logger';
 
 // --- Environment Variables --- //
@@ -14,13 +14,11 @@ const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
 const CONTACT_EMAIL_RECIPIENT = process.env.CONTACT_EMAIL_RECIPIENT;
 
-// --- Rate Limiting Middleware --- //
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10), // 1 minute
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '5', 10), // Limit each IP to 5 requests per `window`
-  message: 'Too many requests from this IP, please try again after a minute',
-  statusCode: 429, // 429 Too Many Requests
-  headers: true, // Send X-RateLimit-* headers
+// --- Rate Limiting Setup --- //
+const limiter = new RateLimiter({
+  tokensPerInterval: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '5', 10),
+  interval: "minute",
+  fireImmediately: true
 });
 
 // --- Email Transporter Setup --- //
@@ -51,9 +49,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   // Apply rate limiting
-  await limiter(req, res, async () => {
-    // Type check for body fields
-    const { name, email, message, 'g-recaptcha-response': recaptchaToken } = req.body as {
+  const remainingRequests = await limiter.removeTokens(1);
+  if (remainingRequests < 0) {
+    return res.status(429).json({ success: false, error: 'Too many requests. Please try again later.' });
+  }
+
+  // Type check for body fields
+  const { name, email, message, 'g-recaptcha-response': recaptchaToken } = req.body as {
       name?: string;
       email?: string;
       message?: string;
@@ -120,5 +122,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       logger.error('Error sending email:', error);
       return res.status(500).json({ success: false, error: 'Failed to send message. Please try again later.' });
     }
-  });
 }
